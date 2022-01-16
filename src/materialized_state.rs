@@ -9,19 +9,42 @@ use crate::player::{MaterializedPlayer, Player};
 use crate::state::CubirdsState;
 use crate::utilities::weighted_choice;
 
+pub trait SimplifiableMove {
+    fn simplified(&self) -> String;
+}
+
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct Move {
+pub struct FlockMove {
+    pub bird: Option<Bird>,
+}
+
+impl SimplifiableMove for FlockMove {
+    fn simplified(&self) -> String {
+        let mut string = String::new();
+        if let Some(bird) = self.bird {
+            string += &bird.to_char().to_string();
+        } else {
+            string += "_";
+        }
+        return string;
+    }
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct LineMove {
     pub line: usize,
     pub bird: Bird,
     pub left: bool,
+    pub draw: bool,
 }
 
-impl Move {
-    pub fn simplified(&self) -> String {
+impl SimplifiableMove for LineMove {
+    fn simplified(&self) -> String {
         let mut string = String::new();
         string += &self.bird.to_char().to_string();
         string += &self.line.to_string();
         string += if self.left { "L" } else { "R" };
+        string += if self.draw { "D" } else { "P" };
         return string;
     }
 }
@@ -108,8 +131,8 @@ impl MaterializedCubirdsState {
         return true;
     }
 
-    pub fn random_play(&mut self) -> Option<Move> {
-        let player = &mut self.players[self.turn];
+    pub fn random_play(&mut self) -> Option<LineMove> {
+        let mut player = &mut self.players[self.turn];
 
         let available_birds: Vec<Bird> = player.cards.keys().cloned().collect();
         let bird_idx = thread_rng().gen_range(0..available_birds.len());
@@ -120,10 +143,11 @@ impl MaterializedCubirdsState {
         let line = thread_rng().gen_range(0..LINES);
         let direction = thread_rng().gen_range(0..2) == 0;
 
-        let retval = Move{
+        let mut retval = LineMove{
             line: line,
             bird: bird,
-            left: direction
+            left: direction,
+            draw: false,
         };
 
         if let Some(sandwiched) = self.board[line].play(bird, bird_count, direction) {
@@ -137,6 +161,7 @@ impl MaterializedCubirdsState {
         } else {
             let should_draw = thread_rng().gen_range(0..2) == 0;
             if should_draw {
+                retval.draw = true;
                 for _ in 0..2 {
                     if let Some(drawn) = MaterializedCubirdsState::draw(&mut self.draw_pile, &mut self.discard_pile) {
                         *player.cards.entry(drawn).or_insert(0) += 1;
@@ -144,37 +169,47 @@ impl MaterializedCubirdsState {
                         return None;
                     }
                 }
-            }
-        }
-
-        let flockable = player.flockable();
-        let flock_idx = thread_rng().gen_range(0..(flockable.len() + 1));
-        if flock_idx != flockable.len() {
-            player.fly_home(flockable[flock_idx], &mut self.discard_pile);
-        }
-
-        if player.cards.keys().len() == 0 {
-            let should_draw = thread_rng().gen_range(0..2) == 0;
-            if should_draw {
-                for _ in 0..2 {
-                    if let Some(drawn) = MaterializedCubirdsState::draw(&mut self.draw_pile, &mut self.discard_pile) {
-                        *player.cards.entry(drawn).or_insert(0) += 1;
-                    } else {
-                        return None;
-                    }
-                }
-            } else {
-                if self.reset() {
-                    return Some(retval);
-                } else {
+            } else if player.cards.keys().len() == 0 {
+                if !self.reset() {
                     return None;
                 }
             }
         }
 
-        self.turn = (self.turn + 1) % self.players.len();
+        let _ = self.random_flock_play();
+        player = &mut self.players[self.turn];
+
+        if let Some(reset_success) = self.determine_reset() {
+            if reset_success {
+                return Some(retval);
+            }
+            return None;
+        }
 
         return Some(retval);
+    }
+
+    fn random_flock_play(&mut self) -> FlockMove {
+        let mut player = &mut self.players[self.turn];
+
+        let flockable = player.flockable();
+        let flock_idx = thread_rng().gen_range(0..(flockable.len() + 1));
+        if flock_idx != flockable.len() {
+            player.fly_home(flockable[flock_idx], &mut self.discard_pile);
+
+            return FlockMove{bird: Some(flockable[flock_idx])};
+        }
+
+        return FlockMove{bird: None};
+    }
+
+    fn determine_reset(&mut self) -> Option<bool> {
+        let player = &mut self.players[self.turn];
+        if player.cards.keys().len() == 0 {
+            return Some(self.reset());
+        }
+        self.turn = (self.turn + 1) % self.players.len();
+        return None;
     }
 
     pub fn player_win(&self) -> Option<i32> {
@@ -190,8 +225,7 @@ impl MaterializedCubirdsState {
         return None;
     }
 
-    pub fn rollout(&mut self) -> Option<(Move, bool)> {
-        let first_move = self.random_play().unwrap();
+    fn complete_rollout(&mut self) -> Option<i32> {
         let mut win = self.player_win();
         while win == None {
             let cmove = self.random_play();
@@ -200,6 +234,27 @@ impl MaterializedCubirdsState {
             }
             win = self.player_win();
         }
-        return Some((first_move, win.unwrap() == self.player_idx));
+        return win;
+    }
+
+    pub fn full_rollout(&mut self) -> Option<(LineMove, bool)> {
+        let first_move = self.random_play().unwrap();
+        if let Some(winner) = self.complete_rollout() {
+            return Some((first_move, winner == self.player_idx));
+        }
+        return None;
+    }
+
+    pub fn flock_rollout(&mut self) -> Option<(FlockMove, bool)> {
+        let first_move = self.random_flock_play();
+        if let Some(x) = self.determine_reset() {
+            if !x {
+                return None;
+            }
+        }
+        if let Some(winner) = self.complete_rollout() {
+            return Some((first_move, winner == self.player_idx));
+        }
+        return None;
     }
 }

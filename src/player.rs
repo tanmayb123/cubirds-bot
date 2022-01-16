@@ -39,7 +39,8 @@ impl MaterializedPlayer {
         let bird_count = *self.cards.get(&bird).unwrap();
         self.cards.remove(&bird);
         let large = bird_count >= bird.information().large;
-        *self.collection.entry(bird).or_insert(0) += if large { 2 } else { 1 };
-        *discard_pile.entry(bird).or_insert(0) += bird_count;
+        let flock_size = if large { 2 } else { 1 };
+        *self.collection.entry(bird).or_insert(0) += flock_size;
+        *discard_pile.entry(bird).or_insert(0) += bird_count - flock_size;
     }
 }

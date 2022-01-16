@@ -136,14 +136,116 @@ impl CubirdsState {
         return state;
     }
 
-    pub fn next_move(&mut self) {
+    pub fn play(&mut self, player_number: usize, bird: Bird, count: i32, line: usize, play_dir: bool, new_bird: Option<(Vec<Bird>, bool)>) {
+        let mut player = &mut self.players[player_number];
+
+        player.cards.known_cards.remove(&bird);
+        player.cards.blacklisted_cards.insert(bird);
+        player.cards.total_cards -= count;
+        
+        if let Some(sandwiched) = self.board[line].play(bird, count, play_dir) {
+            for (sbird, sbird_count) in sandwiched {
+                *player.cards.known_cards.entry(sbird).or_insert(0) += sbird_count;
+                player.cards.total_cards += sbird_count;
+                player.cards.blacklisted_cards.remove(&sbird);
+            }
+
+            if let Some(new) = new_bird {
+                let (nb, nbd) = new;
+                if nbd {
+                    for (bird_idx, bird) in nb.iter().enumerate() {
+                        self.board[line].0.insert(bird_idx, *bird);
+                    }
+                } else {
+                    for bird in nb {
+                        self.board[line].0.push(bird);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn draw(&mut self, player_number: usize, birds: Option<(Bird, Bird)>) {
+        let mut player = &mut self.players[player_number];
+
+        player.cards.blacklisted_cards = HashSet::new();
+        player.cards.total_cards += 2;
+
+        if let Some(new_birds) = birds {
+            *player.cards.known_cards.entry(new_birds.0).or_insert(0) += 1;
+            *player.cards.known_cards.entry(new_birds.1).or_insert(0) += 1;
+        }
+    }
+
+    pub fn fly(&mut self, player_number: usize, bird: Bird, new_total_cards: i32, flock_small: bool) {
+        let mut player = &mut self.players[player_number];
+
+        let flock_size = if flock_small { 1 } else { 2 };
+        let flown_count = player.cards.total_cards - new_total_cards;
+        let discarded = flown_count - flock_size;
+
+        remove_from_hashmap(&mut player.cards.known_cards, bird);
+        player.cards.blacklisted_cards.insert(bird);
+        player.cards.total_cards -= flown_count as i32;
+
+        *player.collection.entry(bird).or_insert(0) += flock_size;
+
+        let mut discarded_cards = PartialCards{
+            known_cards: HashMap::new(),
+            blacklisted_cards: HashSet::new(),
+            total_cards: discarded as i32,
+        };
+        discarded_cards.known_cards.insert(bird, discarded);
+
+        self.discard_pile.push(discarded_cards);
+    }
+
+    pub fn reset(&mut self) {
+        for player in &mut self.players {
+            for (bird, bird_count) in &player.cards.known_cards {
+                let mut discarded_cards = PartialCards{
+                    known_cards: HashMap::new(),
+                    blacklisted_cards: HashSet::new(),
+                    total_cards: *bird_count,
+                };
+                discarded_cards.known_cards.insert(*bird, *bird_count);
+                self.discard_pile.push(discarded_cards);
+            }
+            let total_known: i32 = player.cards.known_cards.values().sum();
+            let unknown = player.cards.total_cards - total_known;
+            if unknown > 0 {
+                let mut discarded_cards = PartialCards{
+                    known_cards: HashMap::new(),
+                    blacklisted_cards: HashSet::new(),
+                    total_cards: unknown,
+                };
+                self.discard_pile.push(discarded_cards);
+            }
+            player.cards.known_cards = HashMap::new();
+            player.cards.blacklisted_cards = HashSet::new();
+            player.cards.total_cards = STARTING_CARDS_HAND;
+        }
+    }
+
+    pub fn set_birds(&mut self, player_number: usize, birds: &Vec<Bird>) {
+        let mut player = &mut self.players[player_number];
+
+        player.cards.known_cards = HashMap::new();
+        player.cards.blacklisted_cards = HashSet::new();
+        player.cards.total_cards = birds.len() as i32;
+        for bird in birds {
+            *player.cards.known_cards.entry(*bird).or_insert(0) += 1;
+        }
+    }
+
+    pub fn next_move(&mut self, pre_fly_home: &dyn Fn(&CubirdsState)) {
         println!("Turn {}", self.turn);
 
         let mut player = &mut self.players[self.turn];
         let is_main = self.turn == (self.player_idx as usize);
 
         let determine_player_draw = |player: &mut Player| {
-            println!("Did player draw?");
+            println!("Did player draw? (0Y/1N)");
             let draw = CubirdsState::get_number() == 0;
 
             if draw {
@@ -170,7 +272,7 @@ impl CubirdsState {
         let bird_count = CubirdsState::get_number() as i32;
         println!("Line:");
         let line = CubirdsState::get_number();
-        println!("Direction:");
+        println!("Direction: (0L/1R)");
         let direction = CubirdsState::get_number() == 0;
 
         remove_from_hashmap(&mut player.cards.known_cards, bird);
@@ -180,7 +282,7 @@ impl CubirdsState {
         if let Some(sandwiched) = self.board[line].play(bird, bird_count, direction) {
             println!("Birds new on line:");
             let new_birds = CubirdsState::get_multiple_birds();
-            println!("New birds direction:");
+            println!("New birds direction: (0L/1R)");
             let new_direction = CubirdsState::get_number() == 0;
 
             if new_direction {
@@ -196,47 +298,11 @@ impl CubirdsState {
             for (sbird, sbird_count) in sandwiched {
                 *player.cards.known_cards.entry(sbird).or_insert(0) += sbird_count;
                 player.cards.total_cards += sbird_count;
+                player.cards.blacklisted_cards.remove(&sbird);
             }
         } else {
-            let _ = determine_player_draw(&mut player, );
-        }
-
-        println!("Did player fly home?");
-        let flew_home = CubirdsState::get_number() == 0;
-        if flew_home {
-            println!("Bird flown home:");
-            let bird_flown = CubirdsState::get_single_bird();
-
-            println!("Flock size:");
-            let flock_small = CubirdsState::get_number() == 0;
-
-            println!("New discard size:");
-            let discard_size = CubirdsState::get_number();
-
-            let old_discard_size = self.discard_pile.iter().map(|x| x.total_cards).sum::<i32>() as usize;
-            let new_discarded = discard_size - old_discard_size;
-            let birds_required = if flock_small { bird_flown.information().small } else { bird_flown.information().large } as usize;
-            let flown_count = new_discarded + birds_required;
-
-            remove_from_hashmap(&mut player.cards.known_cards, bird_flown);
-            player.cards.blacklisted_cards.insert(bird_flown);
-            player.cards.total_cards -= flown_count as i32;
-
-            *player.collection.entry(bird_flown).or_insert(0) += if flock_small { 1 } else { 2 };
-
-            if new_discarded > 0 {
-                let mut discarded_cards = PartialCards{
-                    known_cards: HashMap::new(),
-                    blacklisted_cards: HashSet::new(),
-                    total_cards: new_discarded as i32,
-                };
-                discarded_cards.known_cards.insert(bird_flown, new_discarded as i32);
-                self.discard_pile.push(discarded_cards);
-            }
-        }
-
-        if player.cards.total_cards == 0 {
-            if !determine_player_draw(&mut player) {
+            player = &mut self.players[self.turn];
+            if !determine_player_draw(&mut player) && player.cards.total_cards == 0 {
                 for player in &mut self.players {
                     player.cards.known_cards = HashMap::new();
                     player.cards.blacklisted_cards = HashSet::new();
@@ -247,7 +313,64 @@ impl CubirdsState {
                 for bird in CubirdsState::get_multiple_birds() {
                     *self.players[self.player_idx as usize].cards.known_cards.entry(bird).or_insert(0) += 1;
                 }
+
+                return;
             }
         }
+
+        pre_fly_home(self);
+        player = &mut self.players[self.turn];
+
+        println!("Did player fly home? (0Y/1N)");
+        let flew_home = CubirdsState::get_number() == 0;
+        if flew_home {
+            println!("Bird flown home:");
+            let bird_flown = CubirdsState::get_single_bird();
+
+            println!("Flock size: (0S/1L)");
+            let flock_small = CubirdsState::get_number() == 0;
+            let flock_size = if flock_small { 1 } else { 2 };
+
+            println!("New discard size:");
+            let discard_size = CubirdsState::get_number();
+
+            let old_discard_size = self.discard_pile.iter().map(|x| x.total_cards).sum::<i32>() as usize;
+            let new_discarded = discard_size - old_discard_size;
+            let birds_required = (if flock_small { bird_flown.information().small } else { bird_flown.information().large } - flock_size) as usize;
+            let flown_count = new_discarded + birds_required;
+
+            remove_from_hashmap(&mut player.cards.known_cards, bird_flown);
+            player.cards.blacklisted_cards.insert(bird_flown);
+            player.cards.total_cards -= flown_count as i32;
+
+            *player.collection.entry(bird_flown).or_insert(0) += flock_size;
+
+            if new_discarded > 0 {
+                let mut discarded_cards = PartialCards{
+                    known_cards: HashMap::new(),
+                    blacklisted_cards: HashSet::new(),
+                    total_cards: new_discarded as i32,
+                };
+
+                self.discard_pile.push(discarded_cards);
+            }
+        }
+
+        if player.cards.total_cards == 0 {
+            for player in &mut self.players {
+                player.cards.known_cards = HashMap::new();
+                player.cards.blacklisted_cards = HashSet::new();
+                player.cards.total_cards = STARTING_CARDS_HAND;
+            }
+
+            println!("Player hand:");
+            for bird in CubirdsState::get_multiple_birds() {
+                *self.players[self.player_idx as usize].cards.known_cards.entry(bird).or_insert(0) += 1;
+            }
+
+            return;
+        }
+
+        self.turn = (self.turn + 1) % self.players.len();
     }
 }
