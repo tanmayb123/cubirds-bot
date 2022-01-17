@@ -152,7 +152,10 @@ impl CommandHandler {
             "PLAYSCORE" => self.handle_play_score(),
             "FLOCKSCORE" => self.handle_flock_score(),
             "UNDO" => self.handle_undo(),
-            "PRINT" => println!("{:?}", self.state),
+            "PRINT" => {
+                println!("{:?}", self.state);
+                return;
+            },
             _ => println!("Invalid command."),
         }
 
